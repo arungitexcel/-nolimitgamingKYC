@@ -1,10 +1,14 @@
 import "dotenv/config";
+import fs from "fs";
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import compression from "compression";
 import mongoose from "mongoose";
 import { connectMongoDB } from "./utils/db.js";
+import { uploadConfig } from "./config/upload.js";
+import kycRoutes from "./routes/kyc.routes.js";
+import { errorHandler } from "./middleware/errorHandler.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -39,26 +43,21 @@ app.get("/health", (req, res) => {
   });
 });
 
+app.use("/kyc", kycRoutes);
+
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ status: "error", message: "Not found" });
 });
 
 // Global error handler
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  const statusCode = err.statusCode ?? 500;
-  const message =
-    process.env.NODE_ENV === "production" && statusCode === 500
-      ? "Internal server error"
-      : err.message ?? "Internal server error";
-  res.status(statusCode).json({ status: "error", message });
-});
+app.use(errorHandler);
 
 let server;
 
 async function start() {
   await connectMongoDB();
+  fs.mkdirSync(uploadConfig.rootPath, { recursive: true });
   server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
   });
