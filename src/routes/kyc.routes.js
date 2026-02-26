@@ -43,18 +43,17 @@ router.post(
 
 router.get("/status", asyncHandler(kycController.getKycStatus));
 
+// Admin-only: require X-Admin-Key header (env: ADMIN_API_KEY)
 router.get(
   "/review",
   requireAdminKey,
   asyncHandler(kycController.reviewKyc)
 );
-
 router.post(
   "/approve",
   requireAdminKey,
   asyncHandler(kycController.approveKyc)
 );
-
 router.post(
   "/reject",
   requireAdminKey,

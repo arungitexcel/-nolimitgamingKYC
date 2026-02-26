@@ -8,6 +8,7 @@ import mongoose from "mongoose";
 import { connectMongoDB } from "./utils/db.js";
 import { uploadConfig } from "./config/upload.js";
 import kycRoutes from "./routes/kyc.routes.js";
+import adminRoutes from "./routes/admin.routes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
 const app = express();
@@ -15,11 +16,13 @@ const PORT = Number(process.env.PORT) || 3000;
 
 // Security middleware
 app.use(helmet());
+console.log(process.env.ALLOWED_ORIGINS);
 app.use(
   cors({
-    origin: process.env.ALLOWED_ORIGINS
-      ? process.env.ALLOWED_ORIGINS.split(",")
-      : true,
+    origin: process.env.ALLOWED_ORIGINS,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
   })
 );
 app.use(compression());
@@ -44,6 +47,7 @@ app.get("/health", (req, res) => {
 });
 
 app.use("/kyc", kycRoutes);
+app.use("/admin", adminRoutes);
 
 // 404 handler
 app.use((req, res) => {
