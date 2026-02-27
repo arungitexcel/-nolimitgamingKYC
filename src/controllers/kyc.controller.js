@@ -41,25 +41,60 @@ export async function reviewKyc(req, res) {
 }
 
 /**
- * POST /kyc/approve { kycId } (admin)
+ * GET /kyc/review/:kycId (admin) – single KYC details including file paths
  */
-export async function approveKyc(req, res) {
-  const { kycId } = req.body;
+export async function getKycDetails(req, res) {
+  const { kycId } = req.params;
   if (!kycId) {
     throw new ValidationError("kycId is required");
   }
-  const result = await kycService.approveKyc(kycId);
+  const data = await kycService.getKycForReview(kycId);
+  res.status(200).json({ status: "success", data });
+}
+
+/**
+ * GET /kyc/document/:kycId/:filename (admin) – stream document file
+ */
+export async function getDocument(req, res, next) {
+  const { kycId, filename } = req.params;
+  if (!kycId || !filename) {
+    throw new ValidationError("kycId and filename are required");
+  }
+  const { fullPath, contentType } = await kycService.getDocumentPath(
+    kycId,
+    filename
+  );
+  res.setHeader("Content-Type", contentType);
+  res.sendFile(fullPath, (err) => {
+    if (err) next(err);
+  });
+}
+
+/**
+ * POST /kyc/approve { kycId, reviewedBy?, notifyEmail? } (admin)
+ */
+export async function approveKyc(req, res) {
+  const { kycId, reviewedBy, notifyEmail } = req.body;
+  if (!kycId) {
+    throw new ValidationError("kycId is required");
+  }
+  const result = await kycService.approveKyc(kycId, reviewedBy, notifyEmail);
   res.status(200).json({ status: "success", data: result });
 }
 
 /**
- * POST /kyc/reject { kycId, reason } (admin)
+ * POST /kyc/reject { kycId, reason, reviewedBy?, notifyEmail? } (admin)
  */
 export async function rejectKyc(req, res) {
-  const { kycId, reason } = req.body;
+  const { kycId, reason, reviewedBy, notifyEmail } = req.body;
   if (!kycId) {
     throw new ValidationError("kycId is required");
   }
-  const result = await kycService.rejectKyc(kycId, reason);
+  const result = await kycService.rejectKyc(
+    kycId,
+    reason,
+    reviewedBy,
+    notifyEmail
+  );
   res.status(200).json({ status: "success", data: result });
 }

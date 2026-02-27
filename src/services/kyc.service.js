@@ -6,6 +6,7 @@ import {
   ValidationError,
   NotFoundError,
 } from "../utils/errors.js";
+import { notifyKycStatusChange } from "./notification.service.js";
 
 /** Required file keys per document type (selfie always required) */
 const REQUIRED_FILES_BY_DOC_TYPE = {
@@ -72,22 +73,39 @@ async function submitKyc(fields, files) {
     validateMime(arr[0].mimetype);
   }
 
-  const doc = await KycSubmission.create({
-    userId: userId.trim(),
+  const userIdTrimmed = userId.trim();
+  const userIdDir = userIdTrimmed.replace(/[/\\]/g, "_");
+
+  const existing = await KycSubmission.findOne({
+    userId: userIdTrimmed,
     documentType,
-    fullName: fullName.trim(),
-    dateOfBirth: dateOfBirth.trim(),
-    idNumber: idNumber.trim(),
-    status: "submitted",
-    filePaths: {},
   });
+
+  let doc;
+  if (existing) {
+    existing.fullName = fullName.trim();
+    existing.dateOfBirth = dateOfBirth.trim();
+    existing.idNumber = idNumber.trim();
+    existing.status = "pending_review";
+    existing.rejectionReason = null;
+    existing.reviewedAt = null;
+    existing.reviewedBy = null;
+    await existing.save();
+    doc = existing;
+  } else {
+    doc = await KycSubmission.create({
+      userId: userIdTrimmed,
+      documentType,
+      fullName: fullName.trim(),
+      dateOfBirth: dateOfBirth.trim(),
+      idNumber: idNumber.trim(),
+      status: "pending_review",
+      filePaths: {},
+    });
+  }
+
   const kycId = doc._id.toString();
-  const userIdDir = userId.trim().replace(/[/\\]/g, "_");
-  const dirPath = path.join(
-    uploadConfig.rootPath,
-    userIdDir,
-    kycId
-  );
+  const dirPath = path.join(uploadConfig.rootPath, userIdDir, kycId);
   await fs.mkdir(dirPath, { recursive: true });
 
   const filePaths = {};
@@ -167,7 +185,6 @@ async function listForReview(options = {}) {
   const filter = options.status ? { status: options.status } : {};
   const list = await KycSubmission.find(filter)
     .sort({ createdAt: -1 })
-    .select("_id userId documentType status fullName createdAt")
     .lean();
   return list.map((doc) => ({
     kycId: doc._id.toString(),
@@ -175,16 +192,82 @@ async function listForReview(options = {}) {
     documentType: doc.documentType,
     status: doc.status,
     fullName: doc.fullName,
+    dateOfBirth: doc.dateOfBirth,
+    idNumber: doc.idNumber,
+    rejectionReason: doc.rejectionReason ?? undefined,
+    reviewedAt: doc.reviewedAt ?? undefined,
+    reviewedBy: doc.reviewedBy ?? undefined,
     createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
   }));
+}
+
+/**
+ * Get single KYC submission details for admin review (includes file paths).
+ * @param {string} kycId
+ */
+async function getKycForReview(kycId) {
+  const doc = await KycSubmission.findById(kycId).lean();
+  if (!doc) {
+    throw new NotFoundError("KYC submission not found");
+  }
+  return {
+    kycId: doc._id.toString(),
+    userId: doc.userId,
+    documentType: doc.documentType,
+    status: doc.status,
+    fullName: doc.fullName,
+    dateOfBirth: doc.dateOfBirth,
+    idNumber: doc.idNumber,
+    filePaths: doc.filePaths,
+    rejectionReason: doc.rejectionReason ?? undefined,
+    reviewedAt: doc.reviewedAt ?? undefined,
+    reviewedBy: doc.reviewedBy ?? undefined,
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+  };
+}
+
+/**
+ * Resolve full filesystem path for a KYC document (admin only).
+ * @param {string} kycId
+ * @param {string} filename - e.g. aadhaar_front.jpg, selfie.png
+ * @returns {{ fullPath: string, contentType: string }}
+ */
+async function getDocumentPath(kycId, filename) {
+  const doc = await KycSubmission.findById(kycId).lean();
+  if (!doc) {
+    throw new NotFoundError("KYC submission not found");
+  }
+  const filePaths = doc.filePaths || {};
+  const relativePath = Object.values(filePaths).find((p) =>
+    p && (p.endsWith(filename) || p.split("/").pop() === filename)
+  );
+  if (!relativePath) {
+    throw new NotFoundError("Document not found");
+  }
+  const fullPath = path.resolve(uploadConfig.rootPath, relativePath);
+  const rootResolved = path.resolve(uploadConfig.rootPath);
+  if (!fullPath.startsWith(rootResolved)) {
+    throw new NotFoundError("Document not found");
+  }
+  const ext = path.extname(filename).toLowerCase();
+  const contentType =
+    ext === ".pdf"
+      ? "application/pdf"
+      : ext === ".png"
+        ? "image/png"
+        : "image/jpeg";
+  return { fullPath, contentType };
 }
 
 /**
  * Approve a KYC submission (admin).
  * @param {string} kycId
  * @param {string} [reviewedBy] - optional admin identifier
+ * @param {string} [notifyEmail] - optional email to send approval notification
  */
-async function approveKyc(kycId, reviewedBy = null) {
+async function approveKyc(kycId, reviewedBy = null, notifyEmail = null) {
   const doc = await KycSubmission.findByIdAndUpdate(
     kycId,
     {
@@ -198,6 +281,11 @@ async function approveKyc(kycId, reviewedBy = null) {
   if (!doc) {
     throw new NotFoundError("KYC submission not found");
   }
+  await notifyKycStatusChange(doc.userId, "approved", {
+    email: notifyEmail || undefined,
+    fullName: doc.fullName,
+    kycId: doc._id.toString(),
+  });
   return { kycId: doc._id.toString(), status: doc.status };
 }
 
@@ -206,8 +294,9 @@ async function approveKyc(kycId, reviewedBy = null) {
  * @param {string} kycId
  * @param {string} reason
  * @param {string} [reviewedBy]
+ * @param {string} [notifyEmail] - optional email to send rejection notification
  */
-async function rejectKyc(kycId, reason, reviewedBy = null) {
+async function rejectKyc(kycId, reason, reviewedBy = null, notifyEmail = null) {
   if (!reason || !String(reason).trim()) {
     throw new ValidationError("Rejection reason is required");
   }
@@ -224,6 +313,12 @@ async function rejectKyc(kycId, reason, reviewedBy = null) {
   if (!doc) {
     throw new NotFoundError("KYC submission not found");
   }
+  await notifyKycStatusChange(doc.userId, "rejected", {
+    email: notifyEmail || undefined,
+    reason: doc.rejectionReason,
+    fullName: doc.fullName,
+    kycId: doc._id.toString(),
+  });
   return { kycId: doc._id.toString(), status: doc.status };
 }
 
@@ -231,6 +326,8 @@ export const kycService = {
   submitKyc,
   getKycStatus,
   listForReview,
+  getKycForReview,
+  getDocumentPath,
   approveKyc,
   rejectKyc,
 };

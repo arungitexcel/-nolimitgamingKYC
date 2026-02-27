@@ -1,6 +1,5 @@
 /**
- * KYC routes – 3rd party tool: users submit docs, admin lists/approves/rejects.
- * No document view or download endpoint by design; files are stored for records only.
+ * KYC routes – users submit docs; admin lists/reviews/approves/rejects and can view/download documents.
  */
 import { Router } from "express";
 import multer from "multer";
@@ -48,6 +47,16 @@ router.get(
   "/review",
   requireAdminKey,
   asyncHandler(kycController.reviewKyc)
+);
+router.get(
+  "/review/:kycId",
+  requireAdminKey,
+  asyncHandler(kycController.getKycDetails)
+);
+router.get(
+  "/document/:kycId/:filename",
+  requireAdminKey,
+  asyncHandler(kycController.getDocument)
 );
 router.post(
   "/approve",
